@@ -28,6 +28,8 @@ class LinkRequest(BaseModel):
     url: str
     format: str | None = None  # "mp4" | "mp3" for video
     quality: str | None = None  # "best" | "1080" | "720" | "480" | "360"
+    start: str | None = None  # optional clip start, e.g. "8", "0:08", "00:00:08"
+    end: str | None = None  # optional clip end
 
 
 def validate_public_url(url: str) -> str:
@@ -74,8 +76,29 @@ def _duration_filter(info, *, incomplete=False):
         return f"Video is longer than the {MAX_DURATION // 60} minute limit."
     return None
 
-def _ytdlp_download(url: str, fmt: str, quality: str, outdir: str) -> tuple[Path, str]:
+def parse_time(value: str | None) -> float | None:
+    """'90', '1:30', '00:01:30', '1:30.5' -> seconds. Empty -> None."""
+    if value is None or not str(value).strip():
+        return None
+    parts = str(value).strip().split(":")
+    if len(parts) > 3:
+        raise HTTPException(400, f"Invalid time '{value}'. Use seconds, MM:SS or HH:MM:SS.")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        raise HTTPException(400, f"Invalid time '{value}'. Use seconds, MM:SS or HH:MM:SS.")
+    if any(n < 0 for n in nums):
+        raise HTTPException(400, "Times cannot be negative.")
+    total = 0.0
+    for n in nums:
+        total = total * 60 + n
+    return total
+
+
+def _ytdlp_download(url: str, fmt: str, quality: str, outdir: str,
+                    start: float | None = None, end: float | None = None) -> tuple[Path, str]:
     import yt_dlp
+    from yt_dlp.utils import download_range_func
 
     opts: dict = {
         "outtmpl": os.path.join(outdir, "%(title).150B [%(id)s].%(ext)s"),
@@ -84,8 +107,13 @@ def _ytdlp_download(url: str, fmt: str, quality: str, outdir: str) -> tuple[Path
         "noprogress": True,
         "no_warnings": True,
         "restrictfilenames": False,
-        "match_filter": _duration_filter,
+        # a clip of a long video is fine; only limit full-length downloads
+        "match_filter": _duration_filter if start is None and end is None else None,
     }
+    if start is not None or end is not None:
+        # same as: --download-sections "*START-END" --force-keyframes-at-cuts
+        opts["download_ranges"] = download_range_func(None, [(start or 0, end if end is not None else float("inf"))])
+        opts["force_keyframes_at_cuts"] = True
     if COOKIES_FILE and os.path.exists(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
 
@@ -105,7 +133,7 @@ def _ytdlp_download(url: str, fmt: str, quality: str, outdir: str) -> tuple[Path
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        if info is None or (info.get("duration") or 0) > MAX_DURATION:
+        if info is None or ((info.get("duration") or 0) > MAX_DURATION and start is None and end is None):
             raise HTTPException(400, f"Video is longer than the {MAX_DURATION // 60} minute limit.")
         title = info.get("title") or "video"
 
@@ -120,10 +148,13 @@ async def download_video(req: LinkRequest):
     fmt = (req.format or "mp4").lower()
     if fmt not in ("mp4", "mp3"):
         raise HTTPException(400, "Format must be mp4 or mp3.")
+    start, end = parse_time(req.start), parse_time(req.end)
+    if start is not None and end is not None and end <= start:
+        raise HTTPException(400, "End time must be after start time.")
     url = validate_public_url(req.url)
     tmpdir = tempfile.mkdtemp(prefix="vid-")
     try:
-        path, title = await asyncio.to_thread(_ytdlp_download, url, fmt, req.quality or "best", tmpdir)
+        path, title = await asyncio.to_thread(_ytdlp_download, url, fmt, req.quality or "best", tmpdir, start, end)
     except HTTPException:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise

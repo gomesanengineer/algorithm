@@ -4,11 +4,24 @@ A small website that takes a link and gives you a file:
 
 | Paste a link to… | You get |
 |---|---|
-| A YouTube (or other video-site) video | **MP4** (choose up to 1080p / best) or **MP3** audio |
+| A YouTube (incl. Shorts) or other video-site link | **MP4** (choose up to 1080p / best) or **MP3** audio — optionally only a **clip** between a start and end time |
 | A direct **PDF** link | The PDF |
 | A **PPT / PPTX / DOC / DOCX / ODP** link | The file converted to **PDF** (LibreOffice) |
 | **Google Slides / Docs / Sheets / Drive**, **Dropbox** share links | The document as **PDF** |
 | Any **web page that shows a document** (PDF.js viewers, slide viewers, embedded PDFs) | The page is opened in a headless browser, **scrolled to the end** so every lazy-loaded page renders, then **every page/slide is captured** into one PDF |
+
+## Clipping a video
+
+Fill in **Start** and/or **End** (seconds, `MM:SS` or `HH:MM:SS`) to download only that part.
+This is the same as running:
+
+```bash
+yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]" \
+  --download-sections "*00:00:08-00:00:33" --force-keyframes-at-cuts \
+  --merge-output-format mp4 <link>
+```
+
+Leave Start empty to begin at 0:00; leave End empty to go to the end of the video.
 
 ## How the document capture works
 

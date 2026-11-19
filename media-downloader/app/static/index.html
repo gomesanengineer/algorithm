@@ -25,9 +25,9 @@
   .card h2 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
   .card p.hint { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  input[type=url], select { width: 100%; padding: 12px 14px; font: inherit; color: var(--text);
+  input[type=url], input[type=text], select { width: 100%; padding: 12px 14px; font: inherit; color: var(--text);
           background: var(--input); border: 1px solid var(--border); border-radius: 10px; }
-  input[type=url]:focus, select:focus { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+  input[type=url]:focus, input[type=text]:focus, select:focus { outline: 2px solid var(--accent-2); outline-offset: 1px; }
   .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
   .row > * { flex: 1 1 140px; }
   button { font: inherit; font-weight: 600; padding: 12px 16px; border: 0; border-radius: 10px;
@@ -51,8 +51,13 @@
 
   <section class="card">
     <h2><span class="dot" style="background:var(--accent)"></span>Video → MP4 / MP3</h2>
-    <p class="hint">YouTube and most video sites. Playlists download the first video only.</p>
-    <input id="vurl" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off">
+    <p class="hint">YouTube (incl. Shorts) and most video sites. Add a start/end time to download just that part
+      (seconds, MM:SS or HH:MM:SS). Leave both empty for the whole video.</p>
+    <input id="vurl" type="url" placeholder="https://www.youtube.com/watch?v=… or /shorts/…" autocomplete="off">
+    <div class="row">
+      <input id="vstart" type="text" inputmode="numeric" placeholder="Start (optional) e.g. 0:08" aria-label="Clip start time">
+      <input id="vend" type="text" inputmode="numeric" placeholder="End (optional) e.g. 0:33" aria-label="Clip end time">
+    </div>
     <div class="row">
       <select id="quality" aria-label="Video quality">
         <option value="best">Best quality</option>
@@ -135,8 +140,9 @@ async function grab(endpoint, body, statusEl, buttons, fallbackName) {
 }
 
 const vButtons = [$('mp4'), $('mp3')];
-$('mp4').onclick = () => grab('/api/video', { url: $('vurl').value.trim(), format: 'mp4', quality: $('quality').value }, $('vstatus'), vButtons, 'video.mp4');
-$('mp3').onclick = () => grab('/api/video', { url: $('vurl').value.trim(), format: 'mp3' }, $('vstatus'), vButtons, 'audio.mp3');
+const clip = () => ({ start: $('vstart').value.trim() || null, end: $('vend').value.trim() || null });
+$('mp4').onclick = () => grab('/api/video', { url: $('vurl').value.trim(), format: 'mp4', quality: $('quality').value, ...clip() }, $('vstatus'), vButtons, 'video.mp4');
+$('mp3').onclick = () => grab('/api/video', { url: $('vurl').value.trim(), format: 'mp3', ...clip() }, $('vstatus'), vButtons, 'audio.mp3');
 $('pdf').onclick = () => grab('/api/document', { url: $('durl').value.trim() }, $('dstatus'), [$('pdf')], 'document.pdf');
 $('vurl').addEventListener('keydown', e => e.key === 'Enter' && $('mp4').click());
 $('durl').addEventListener('keydown', e => e.key === 'Enter' && $('pdf').click());

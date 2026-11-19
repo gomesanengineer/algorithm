@@ -2,22 +2,25 @@
 
 Strategy, in order:
 1. Rewrite well-known share links (Google Slides/Docs/Sheets/Drive, Dropbox) to direct export URLs.
-2. Fetch the URL. If it is a PDF, return it. If it is an Office file (ppt/pptx/doc/docx/odp...),
-   convert it with LibreOffice.
-3. Otherwise it is a web page (a viewer). Open it in headless Chromium, scroll through the whole
-   thing so lazy-loaded pages render, then:
-   a. if the page embeds a PDF (iframe/embed/object), download that file directly;
-   b. if it shows repeated page/slide elements, screenshot each one -> one PDF page each;
-   c. otherwise screenshot the scrolling area one screen at a time -> one PDF page each.
+2. Fetch the URL. If it is a PDF, return it as-is (lossless).
+3. Otherwise open a page in headless Chromium:
+   - a web page / viewer link is opened directly;
+   - a raw .ppt/.pptx/.doc/.docx file is opened in Google's online document viewer
+     (or, for Google Drive links, in Drive's own viewer).
+   Then the viewer is scrolled from top to bottom while every page image / canvas
+   (anything >= 300 px) is collected at its native resolution, the same way the
+   "Download pdf or ppt from chrome" console script works. The pages are put into one PDF.
+   Fallbacks when a viewer has no page images: screenshot repeated page elements, and
+   finally the scrolling area one screen at a time.
 """
 import asyncio
+import base64
 import io
 import os
 import re
-import shutil
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse, unquote, urljoin
+from urllib.parse import urlparse, unquote, urljoin, quote
 
 import httpx
 import img2pdf
@@ -112,27 +115,6 @@ async def fetch(url: str, dest_dir: Path, validate) -> tuple[Path | None, str, s
     return path, "other", title, final
 
 
-async def office_to_pdf(src: Path, outdir: Path) -> Path:
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
-    if not soffice:
-        raise RuntimeError("LibreOffice is not installed on the server.")
-    profile = outdir / f"lo-profile-{uuid.uuid4().hex}"
-    proc = await asyncio.create_subprocess_exec(
-        soffice, f"-env:UserInstallation=file://{profile}", "--headless", "--norestore",
-        "--convert-to", "pdf", "--outdir", str(outdir), str(src),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise RuntimeError("Office to PDF conversion timed out.")
-    out = outdir / f"{src.stem}.pdf"
-    if not out.exists():
-        raise RuntimeError(f"Office to PDF conversion failed: {err.decode(errors='ignore')[:300]}")
-    return out
-
-
 # ------------------------------------------------------------------ browser capture
 FIND_SCROLLER_JS = """
 () => {
@@ -145,7 +127,7 @@ FIND_SCROLLER_JS = """
     const r = el.getBoundingClientRect();
     const area = r.width * r.height;
     if (r.width < 300 || r.height < 200) continue;
-    if (area > bestArea) { best = el; bestArea = area; }
+    if (area > bestArea || (area === bestArea && best && el.scrollHeight > best.scrollHeight)) { best = el; bestArea = area; }
   }
   const docScrolls = doc.scrollHeight > window.innerHeight + 50;
   if (best && (!docScrolls || bestArea > window.innerWidth * window.innerHeight * 0.4)) {
@@ -159,7 +141,7 @@ FIND_SCROLLER_JS = """
 SCROLL_JS = """
 ([useEl, y]) => {
   const el = useEl ? document.querySelector('[data-mg-scroller]') : (document.scrollingElement || document.documentElement);
-  el.scrollTop = y;
+  if (y !== null && y !== undefined) el.scrollTop = y;
   return { top: el.scrollTop, height: el.scrollHeight, view: useEl ? el.clientHeight : window.innerHeight };
 }
 """
@@ -202,6 +184,54 @@ FIND_PAGES_JS = """
   best.sort((a, b) => (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1);
   best.forEach((c, i) => c.el.setAttribute('data-mg-page', String(i)));
   return best.length;
+}
+"""
+
+# Port of the "Download pdf or ppt from chrome" console script: collect every big <img>/<canvas>
+# at native resolution. Runs repeatedly while scrolling; returns only new/changed pages.
+COLLECT_JS = """
+async ([useEl, MIN]) => {
+  const st = window.__mg || (window.__mg = { seen: new Map() });
+  const scroller = useEl ? document.querySelector('[data-mg-scroller]')
+                         : (document.scrollingElement || document.documentElement);
+  const isDoc = !useEl;
+  const top0 = isDoc ? 0 : scroller.getBoundingClientRect().top;
+  const out = [];
+  const els = [...document.querySelectorAll('img, canvas')].filter(el => {
+    const w = el.tagName === 'IMG' ? el.naturalWidth : el.width;
+    const h = el.tagName === 'IMG' ? el.naturalHeight : el.height;
+    return w >= MIN && h >= MIN && (el.tagName !== 'IMG' || el.complete);
+  });
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50) continue;            // hidden / offscreen copies
+    const order = Math.round(r.top - top0 + scroller.scrollTop);
+    const isImg = el.tagName === 'IMG';
+    const key = isImg ? el.currentSrc || el.src : 'canvas@' + order;
+    const w = isImg ? el.naturalWidth : el.width, h = isImg ? el.naturalHeight : el.height;
+    // tiny thumbnail = blank check + change detection (viewers re-render / recycle canvases)
+    let sig = '';
+    try {
+      const t = document.createElement('canvas'); t.width = 16; t.height = 16;
+      const x = t.getContext('2d'); x.drawImage(el, 0, 0, 16, 16);
+      const d = x.getImageData(0, 0, 16, 16).data;
+      let alpha = 0, sum = 0;
+      for (let i = 0; i < d.length; i += 4) { alpha += d[i + 3]; sum += d[i] * 3 + d[i + 1] * 5 + d[i + 2] * 7; }
+      if (!isImg && alpha === 0) continue;                    // canvas not rendered yet
+      sig = alpha + ':' + sum;
+    } catch (e) {
+      sig = 'tainted';                                         // cross-origin image
+    }
+    if (st.seen.get(key) === sig) continue;
+    if (isImg && st.seen.has(key)) continue;                   // same image already taken
+    st.seen.set(key, sig);
+    if (sig === 'tainted') { out.push({ key, order, w, h, src: el.currentSrc || el.src }); continue; }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(el, 0, 0, w, h);
+    out.push({ key, order, w, h, data: c.toDataURL('image/jpeg', 0.92) });
+  }
+  return out;
 }
 """
 
@@ -308,6 +338,51 @@ async def capture_screens(page, use_el: bool) -> list[bytes]:
     return shots
 
 
+async def collect_page_images(page, ctx, use_el: bool) -> list[bytes]:
+    """Scroll top -> bottom, collecting page images/canvases until nothing new appears."""
+    pages: dict[str, dict] = {}
+
+    async def grab():
+        for item in await page.evaluate(COLLECT_JS, [use_el, 300]):
+            if "src" in item:  # cross-origin image: fetch it with the page's cookies
+                try:
+                    r = await ctx.request.get(item["src"], timeout=30000)
+                    if r.ok:
+                        item["bytes"] = await r.body()
+                except Exception:
+                    continue
+            else:
+                item["bytes"] = base64.b64decode(item["data"].split(",", 1)[1])
+            if item.get("bytes"):
+                pages[item["key"]] = item
+
+    await page.evaluate(SCROLL_JS, [use_el, 0])
+    await page.wait_for_timeout(1500)
+    stable, last_count, last_height = 0, -1, -1
+    for _ in range(3000):
+        await grab()
+        st = await page.evaluate(SCROLL_JS, [use_el, None])
+        at_bottom = st["top"] + st["view"] >= st["height"] - 5
+        if not at_bottom:
+            await page.evaluate(SCROLL_JS, [use_el, st["top"] + max(200, int(st["view"] * 0.5))])
+            await page.wait_for_timeout(700)
+        else:
+            await page.wait_for_timeout(1500)
+        await grab()
+        st = await page.evaluate(SCROLL_JS, [use_el, None])
+        now_bottom = st["top"] + st["view"] >= st["height"] - 5
+        if now_bottom and len(pages) == last_count and st["height"] == last_height:
+            stable += 1
+            if stable >= 3:
+                break
+        elif now_bottom:
+            stable = 0
+        last_count, last_height = len(pages), st["height"]
+        if len(pages) >= MAX_PAGES:
+            break
+    return [p["bytes"] for p in sorted(pages.values(), key=lambda p: p["order"])][:MAX_PAGES]
+
+
 def images_to_pdf(shots: list[bytes], out: Path) -> None:
     clean = []
     for s in shots:
@@ -363,13 +438,16 @@ async def browser_capture(url: str, outdir: Path, validate) -> tuple[Path, str, 
                     return None, title, "embedded", full
 
             use_el = await page.evaluate(FIND_SCROLLER_JS)
-            await scroll_through(page, use_el)
-            n = await page.evaluate(FIND_PAGES_JS)
-            shots, method = [], ""
-            if n >= 2:
+            shots = await collect_page_images(page, ctx, use_el)
+            method = f"page images ({len(shots)})"
+            n = 0
+            if not shots:
+                await scroll_through(page, use_el)
+                n = await page.evaluate(FIND_PAGES_JS)
+            if not shots and n >= 2:
                 shots = await capture_elements(page, n)
                 method = f"pages ({len(shots)})"
-            if len(shots) < 2:
+            if not shots:
                 shots = await capture_screens(page, use_el)
                 method = f"screens ({len(shots)})"
             if not shots:
@@ -382,28 +460,37 @@ async def browser_capture(url: str, outdir: Path, validate) -> tuple[Path, str, 
 
 
 # ------------------------------------------------------------------ entry point
+def office_viewer_url(original: str, direct: str) -> str:
+    """Where to *view* a raw Office file so its pages can be captured."""
+    if "drive.google.com" in urlparse(original).netloc:
+        return original  # Drive's own viewer
+    return "https://docs.google.com/viewer?embedded=true&url=" + quote(direct, safe="")
+
+
 async def capture_document(url: str, outdir: Path, validate) -> tuple[Path, str, str]:
     """Returns (pdf_path, title, method)."""
     direct = rewrite_share_link(url)
+    view_url = url
     for attempt_url in dict.fromkeys([direct, url]):  # rewritten link first, then the original
         path, kind, title, final = await fetch(attempt_url, outdir, validate)
         if kind == "pdf":
             return path, title, "direct pdf"
         if kind == "office":
-            return await office_to_pdf(path, outdir), title, "office -> pdf"
+            view_url = office_viewer_url(url, attempt_url)
+            break
         if kind == "other":
             raise RuntimeError("The link is not a PDF, presentation or web page.")
 
-    pdf, title, method, embedded = await browser_capture(url, outdir, validate)
+    pdf, title, method, embedded = await browser_capture(view_url, outdir, validate)
     if embedded:
         validate(embedded)
         path, kind, etitle, _ = await fetch(embedded, outdir, validate)
         if kind == "pdf":
             return path, etitle or title, "embedded pdf"
-        if kind == "office":
-            return await office_to_pdf(path, outdir), etitle or title, "embedded office -> pdf"
-        # embedded thing was a viewer page itself; capture that instead
-        pdf, title, method, _ = await browser_capture(embedded, outdir, validate)
+        target = office_viewer_url(embedded, embedded) if kind == "office" else embedded
+        pdf, title, method, _ = await browser_capture(target, outdir, validate)
         if pdf is None:
             raise RuntimeError("Could not capture the embedded document.")
+    title = re.sub(r"\s*-\s*Google Drive$", "", title or "", flags=re.I)
+    title = re.sub(r"\.(pdf|pptx?|docx?)$", "", title, flags=re.I).strip() or "document"
     return pdf, title, method

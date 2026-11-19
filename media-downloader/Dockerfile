@@ -3,10 +3,9 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8000 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-# ffmpeg: merge video+audio / make mp3.  LibreOffice: ppt/pptx/doc -> pdf.
+# ffmpeg: merge video+audio / make mp3 / cut clips.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg libreoffice-impress libreoffice-writer libreoffice-calc \
-        fonts-dejavu fonts-liberation fonts-noto-core ca-certificates \
+        ffmpeg fonts-dejavu fonts-liberation fonts-noto-core ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

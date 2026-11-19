@@ -11,6 +11,7 @@ from urllib.parse import urlparse, parse_qs
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -18,6 +19,18 @@ from starlette.background import BackgroundTask
 from .document import capture_document
 
 app = FastAPI(title="Media Grabber")
+
+# Let a separately hosted frontend (e.g. on Vercel) call this API.
+# ALLOWED_ORIGINS="https://my-site.vercel.app,https://example.com"  ("*" allows any site)
+_origins = [o.strip().rstrip("/") for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if _origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+        expose_headers=["Content-Disposition", "X-Capture-Method"],
+    )
 STATIC = Path(__file__).parent / "static"
 
 MAX_DURATION = int(os.getenv("MAX_VIDEO_SECONDS", "7200"))  # 2 hours
@@ -188,7 +201,7 @@ async def download_document(req: LinkRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "ffmpeg": bool(shutil.which("ffmpeg")), "libreoffice": bool(shutil.which("soffice"))}
+    return {"ok": True, "ffmpeg": bool(shutil.which("ffmpeg"))}
 
 
 @app.exception_handler(HTTPException)

@@ -74,17 +74,21 @@
 
   <section class="card">
     <h2><span class="dot" style="background:var(--accent-2)"></span>PDF / PPT → PDF</h2>
-    <p class="hint">Direct PDF or PPT/PPTX/DOCX links, Google Slides/Docs/Drive, Dropbox, or any web page
-      that shows a document. Viewer pages are scrolled to the end and every page is captured.</p>
+    <p class="hint">Any link that shows a PDF or presentation: Google Drive, Google Slides/Docs, Dropbox,
+      online viewers, or a direct .pdf / .ppt / .pptx file. The viewer is scrolled to the end and every page
+      is saved at full resolution.</p>
     <input id="durl" type="url" placeholder="https://… .pdf / .pptx / viewer link" autocomplete="off">
     <div class="row"><button id="pdf" class="blue">Download as PDF</button></div>
     <div id="dstatus" class="status"></div>
   </section>
 
-  <footer>Only download content you own or have permission to save.</footer>
+  <footer><span id="server"></span><br>Only download content you own or have permission to save.</footer>
 </main>
+<script src="config.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
+// Where the download server lives. Empty = same site (when the backend serves this page).
+const API = (window.API_BASE || '').replace(/\/+$/, '');
 
 function setStatus(el, text, kind) {
   el.className = 'status' + (kind ? ' ' + kind : '');
@@ -114,7 +118,7 @@ async function grab(endpoint, body, statusEl, buttons, fallbackName) {
   }, 1000);
   setStatus(statusEl, 'Working…', 'busy');
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch(API + endpoint, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     if (!res.ok) {
@@ -138,6 +142,13 @@ async function grab(endpoint, body, statusEl, buttons, fallbackName) {
     buttons.forEach(b => b.disabled = false);
   }
 }
+
+// Free hosting puts the server to sleep when idle; wake it up while the user pastes a link.
+const serverNote = $('server');
+fetch(API + '/api/health').then(r => {
+  if (r.ok) serverNote.textContent = 'Server ready';
+}).catch(() => { serverNote.textContent = 'Server is starting up — this can take up to a minute.'; });
+setTimeout(() => { if (!serverNote.textContent) serverNote.textContent = 'Waking up the server (free hosting sleeps when idle)…'; }, 1500);
 
 const vButtons = [$('mp4'), $('mp3')];
 const clip = () => ({ start: $('vstart').value.trim() || null, end: $('vend').value.trim() || null });

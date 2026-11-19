@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Grabber</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬇️</text></svg>">
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --text: #16181d; --muted: #646b78; --border: #e2e5ec;
+    --accent: #e5322d; --accent-2: #2d6be5; --ok: #1f9d55; --err: #c62828; --input: #fbfcfe;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --border: #2a2f38;
+            --input: #12151a; --ok: #3ecf7c; --err: #ff6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+          padding: 22px; margin-bottom: 20px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  .card p.hint { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  input[type=url], select { width: 100%; padding: 12px 14px; font: inherit; color: var(--text);
+          background: var(--input); border: 1px solid var(--border); border-radius: 10px; }
+  input[type=url]:focus, select:focus { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+  .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 140px; }
+  button { font: inherit; font-weight: 600; padding: 12px 16px; border: 0; border-radius: 10px;
+           cursor: pointer; color: #fff; background: var(--accent); }
+  button.blue { background: var(--accent-2); }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .55; cursor: progress; }
+  .status { margin-top: 14px; font-size: 14px; min-height: 1.5em; color: var(--muted);
+            display: flex; gap: 8px; align-items: flex-start; word-break: break-word; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--err); }
+  .spin { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent-2);
+          border-radius: 50%; animation: s 0.8s linear infinite; flex: none; margin-top: 2px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  footer { color: var(--muted); font-size: 13px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Media Grabber</h1>
+  <p class="sub">Paste a link to save a video as MP4/MP3, or a PDF/PPT as a single PDF.</p>
+
+  <section class="card">
+    <h2><span class="dot" style="background:var(--accent)"></span>Video → MP4 / MP3</h2>
+    <p class="hint">YouTube and most video sites. Playlists download the first video only.</p>
+    <input id="vurl" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off">
+    <div class="row">
+      <select id="quality" aria-label="Video quality">
+        <option value="best">Best quality</option>
+        <option value="1080">Up to 1080p</option>
+        <option value="720" selected>Up to 720p</option>
+        <option value="480">Up to 480p</option>
+        <option value="360">Up to 360p</option>
+      </select>
+      <button id="mp4">Download MP4</button>
+      <button id="mp3" class="ghost">Download MP3</button>
+    </div>
+    <div id="vstatus" class="status"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot" style="background:var(--accent-2)"></span>PDF / PPT → PDF</h2>
+    <p class="hint">Direct PDF or PPT/PPTX/DOCX links, Google Slides/Docs/Drive, Dropbox, or any web page
+      that shows a document. Viewer pages are scrolled to the end and every page is captured.</p>
+    <input id="durl" type="url" placeholder="https://… .pdf / .pptx / viewer link" autocomplete="off">
+    <div class="row"><button id="pdf" class="blue">Download as PDF</button></div>
+    <div id="dstatus" class="status"></div>
+  </section>
+
+  <footer>Only download content you own or have permission to save.</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function setStatus(el, text, kind) {
+  el.className = 'status' + (kind ? ' ' + kind : '');
+  el.innerHTML = '';
+  if (kind === 'busy') el.appendChild(Object.assign(document.createElement('span'), { className: 'spin' }));
+  el.appendChild(document.createTextNode(text));
+}
+
+function filenameFrom(res, fallback) {
+  const cd = res.headers.get('content-disposition') || '';
+  const star = cd.match(/filename\*=utf-8''([^;]+)/i);
+  if (star) return decodeURIComponent(star[1]);
+  const plain = cd.match(/filename="?([^";]+)"?/i);
+  return plain ? plain[1] : fallback;
+}
+
+async function grab(endpoint, body, statusEl, buttons, fallbackName) {
+  if (!body.url || !/^https?:\/\//i.test(body.url)) {
+    setStatus(statusEl, 'Please paste a full link starting with http:// or https://', 'err');
+    return;
+  }
+  buttons.forEach(b => b.disabled = true);
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.round((Date.now() - started) / 1000);
+    setStatus(statusEl, `Working… ${s}s (large files and long documents take a while)`, 'busy');
+  }, 1000);
+  setStatus(statusEl, 'Working…', 'busy');
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { msg = (await res.json()).error || msg; } catch {}
+      throw new Error(msg);
+    }
+    setStatus(statusEl, 'Receiving file…', 'busy');
+    const blob = await res.blob();
+    const name = filenameFrom(res, fallbackName);
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    const method = res.headers.get('x-capture-method');
+    const mb = (blob.size / 1048576).toFixed(1);
+    setStatus(statusEl, `Saved “${name}” (${mb} MB)${method ? ' · ' + method : ''}`, 'ok');
+  } catch (e) {
+    setStatus(statusEl, 'Error: ' + e.message, 'err');
+  } finally {
+    clearInterval(tick);
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+
+const vButtons = [$('mp4'), $('mp3')];
+$('mp4').onclick = () => grab('/api/video', { url: $('vurl').value.trim(), format: 'mp4', quality: $('quality').value }, $('vstatus'), vButtons, 'video.mp4');
+$('mp3').onclick = () => grab('/api/video', { url: $('vurl').value.trim(), format: 'mp3' }, $('vstatus'), vButtons, 'audio.mp3');
+$('pdf').onclick = () => grab('/api/document', { url: $('durl').value.trim() }, $('dstatus'), [$('pdf')], 'document.pdf');
+$('vurl').addEventListener('keydown', e => e.key === 'Enter' && $('mp4').click());
+$('durl').addEventListener('keydown', e => e.key === 'Enter' && $('pdf').click());
+</script>
+</body>
+</html>

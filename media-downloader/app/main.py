@@ -35,6 +35,7 @@ STATIC = Path(__file__).parent / "static"
 
 MAX_DURATION = int(os.getenv("MAX_VIDEO_SECONDS", "7200"))  # 2 hours
 COOKIES_FILE = os.getenv("YTDLP_COOKIES")  # optional Netscape cookies.txt path
+FFMPEG_LOCATION = os.getenv("FFMPEG_LOCATION")  # folder with ffmpeg(.exe), if not on PATH
 
 
 class LinkRequest(BaseModel):
@@ -129,6 +130,8 @@ def _ytdlp_download(url: str, fmt: str, quality: str, outdir: str,
         opts["force_keyframes_at_cuts"] = True
     if COOKIES_FILE and os.path.exists(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
+    if FFMPEG_LOCATION:
+        opts["ffmpeg_location"] = FFMPEG_LOCATION
 
     if fmt == "mp3":
         opts["format"] = "bestaudio/best"
@@ -201,7 +204,8 @@ async def download_document(req: LinkRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "ffmpeg": bool(shutil.which("ffmpeg"))}
+    ff = bool(shutil.which("ffmpeg")) or bool(FFMPEG_LOCATION and os.path.isdir(FFMPEG_LOCATION))
+    return {"ok": True, "ffmpeg": ff}
 
 
 @app.exception_handler(HTTPException)

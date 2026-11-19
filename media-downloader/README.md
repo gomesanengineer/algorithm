@@ -44,6 +44,13 @@ The response header `X-Capture-Method` (shown in the UI) tells you which path wa
 
 ## Run locally
 
+**Windows (easiest):** install Python from https://www.python.org/downloads/ (tick *Add python.exe to PATH*),
+download this repo (green **Code** button → *Download ZIP*, then unzip), edit the `FFMPEG_LOCATION` line in
+`start-windows.bat` if your ffmpeg folder is different, and double-click `start-windows.bat`.
+The first run installs everything (a few minutes); then your browser opens http://localhost:8000.
+
+**Mac / Linux / manual:**
+
 Requires Python 3.11+ and `ffmpeg`.
 
 ```bash
@@ -100,6 +107,7 @@ Notes:
 | `MAX_DOC_BYTES` | `314572800` | Max size of a downloaded document (300 MB) |
 | `MAX_CAPTURE_PAGES` | `500` | Max pages captured from a viewer page |
 | `YTDLP_COOKIES` | – | Path to a Netscape `cookies.txt` for YouTube (see below) |
+| `FFMPEG_LOCATION` | – | Folder containing ffmpeg, if it is not on PATH |
 | `CHROMIUM_PATH` | – | Use a specific Chromium binary instead of Playwright's |
 
 ### YouTube on cloud servers
